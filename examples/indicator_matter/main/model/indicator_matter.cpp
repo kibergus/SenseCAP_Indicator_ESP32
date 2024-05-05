@@ -258,47 +258,38 @@ static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16
     return err;
 }
 
-static void __matter_temperature_reporter(void* arg) {       
-    if (__g_matter_connected_flag_get()) {       
-        uint16_t endpoint_id = temperature_endpoint_id;
-        uint32_t cluster_id = TemperatureMeasurement::Id;
-        uint32_t attribute_id = TemperatureMeasurement::Attributes::MeasuredValue::Id;
-        node_t *node = node::get();
+// Reports the given value to the given attribute if Matter is connected.
+static void update_attribute(node_t *node, uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id,
+                             esp_matter_attr_val_t value, const char* name) {
+    const char* action_name = "not logging since Matter is not connected";
+    if (__g_matter_connected_flag_get()) {
+        action_name = "updated matter value";
         endpoint_t *endpoint = endpoint::get(node, endpoint_id);
         cluster_t *cluster = cluster::get(endpoint, cluster_id);
         attribute_t *attribute = attribute::get(cluster, attribute_id);
-        esp_matter_attr_val_t val = esp_matter_invalid(NULL);
-        attribute::get_val(attribute, &val);
-        val.val.i16 = (int16_t) __temperature_value_get();
-
-        ESP_LOGI(TAG, "Temperature: esp_matter_attr_val_t value is %d", val.val.i16);        
-        attribute::update(endpoint_id, cluster_id, attribute_id, &val);
-        
+        attribute::update(endpoint_id, cluster_id, attribute_id, &value);
+    }
+    if (value.type == ESP_MATTER_VAL_TYPE_INT16 || value.type == ESP_MATTER_VAL_TYPE_NULLABLE_INT16) {
+        ESP_LOGI(TAG, "%s: %s. Value is %" PRIi16, name, action_name, value.val.i16);
+    } else if (value.type == ESP_MATTER_VAL_TYPE_FLOAT || value.type == ESP_MATTER_VAL_TYPE_NULLABLE_FLOAT) {
+        ESP_LOGI(TAG, "%s: %s. Value is %f", name, action_name, value.val.f);
     } else {
-        int value = (int)(__temperature_value_get() / 1000.0);
-        ESP_LOGI(TAG, "Matter temperature not logging: esp_matter_attr_val_t value is %d", value);
+      val_print(endpoint_id, cluster_id, attribute_id, &value, true);
     }
 }
 
-static void __matter_humidity_reporter(void* arg) {   
-    if (__g_matter_connected_flag_get()) {       
-        uint16_t endpoint_id = humidity_endpoint_id;
-        uint32_t cluster_id = RelativeHumidityMeasurement::Id;
-        uint32_t attribute_id = RelativeHumidityMeasurement::Attributes::MeasuredValue::Id;
-        node_t *node = node::get();
-        endpoint_t *endpoint = endpoint::get(node, endpoint_id);
-        cluster_t *cluster = cluster::get(endpoint, RelativeHumidityMeasurement::Id);
-        attribute_t *attribute = attribute::get(cluster, RelativeHumidityMeasurement::Attributes::MeasuredValue::Id);
-        esp_matter_attr_val_t val = esp_matter_invalid(NULL);
-        attribute::get_val(attribute, &val);
-        val.val.i16 = (int16_t) __humidity_value_get();
+static void __matter_temperature_reporter(void* arg) {
+    node_t *node = node::get();
+    update_attribute(node, temperature_endpoint_id, TemperatureMeasurement::Id,
+                     TemperatureMeasurement::Attributes::MeasuredValue::Id,
+                     esp_matter_int16(__temperature_value_get()), "Temperature");
+}
 
-        ESP_LOGI(TAG, "Humidity: esp_matter_attr_val_t value is %d", val.val.i);
-        attribute::update(endpoint_id, cluster_id, attribute_id, &val);
-    } else {
-        int value = (int)(__humidity_value_get() / 1000.0);
-        ESP_LOGI(TAG, "Matter humidity not logging: esp_matter_attr_val_t value is %d", value);   
-    }
+static void __matter_humidity_reporter(void* arg) {
+    node_t *node = node::get();
+    update_attribute(node, humidity_endpoint_id, RelativeHumidityMeasurement::Id,
+                     RelativeHumidityMeasurement::Attributes::MeasuredValue::Id,
+                     esp_matter_int16( __humidity_value_get()), "Humidity");
 }
 
 static void __button2_callback(bool state) {
