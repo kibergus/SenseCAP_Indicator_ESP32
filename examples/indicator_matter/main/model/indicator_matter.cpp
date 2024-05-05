@@ -2,6 +2,7 @@
 #include "indicator_storage.h"
 #include "matter_config.h"
 
+#include <atomic>
 #include <esp_log.h>
 #include <esp_matter.h>
 #include <esp_wifi.h>
@@ -21,66 +22,23 @@ uint16_t humidity_endpoint_id = 0;
 uint16_t extended_color_light_endpoint_id = 0;
 uint16_t door_lock_endpoint_id = 0;
 uint16_t extended_color_light_endpoint2_id = 0;
-static bool __g_matter_connected_flag = false;
+static std::atomic_bool __g_matter_connected_flag = false;
 static bool __g_ip_connected_flag = false;
-static int __g_humidity = 0;
-static int __g_temperature = 0;
 constexpr auto k_timeout_seconds = 300;
-static SemaphoreHandle_t       __g_matter_mutex;
-static SemaphoreHandle_t       __g_matter_data_mutex;
 static esp_timer_handle_t   matter_sensor_timer_handle;
+
+struct Sensors {
+  std::atomic<int16_t> temperature = 0;
+  std::atomic<int16_t> humidity = 0;
+};
+
+static Sensors __g_sensor_values;
 
 using namespace esp_matter;
 using namespace esp_matter::attribute;
 using namespace esp_matter::endpoint;
 using namespace chip::app::Clusters;
 using namespace esp_matter::cluster::basic_information::attribute;
-
-static void __humidity_value_set( int h )
-{
-    xSemaphoreTake(__g_matter_data_mutex, portMAX_DELAY);
-    __g_humidity = h;
-    xSemaphoreGive(__g_matter_data_mutex);
-}
-
-static int __humidity_value_get(void)
-{
-    xSemaphoreTake(__g_matter_data_mutex, portMAX_DELAY);
-    int h =  __g_humidity;
-    xSemaphoreGive(__g_matter_data_mutex);
-    return h;
-}
-
-static void __temperature_value_set( int t )
-{
-    xSemaphoreTake(__g_matter_data_mutex, portMAX_DELAY);
-    int value = t;
-    __g_temperature = value;
-    xSemaphoreGive(__g_matter_data_mutex);
-}
-
-static int __temperature_value_get(void)
-{
-    xSemaphoreTake(__g_matter_data_mutex, portMAX_DELAY);
-    int t =  __g_temperature;
-    xSemaphoreGive(__g_matter_data_mutex);
-    return t;
-}
-
-static void __g_matter_connected_flag_set( bool s )
-{
-    xSemaphoreTake(__g_matter_mutex, portMAX_DELAY);
-    __g_matter_connected_flag = s;
-    xSemaphoreGive(__g_matter_mutex);
-}
-
-static bool __g_matter_connected_flag_get( void )
-{
-    xSemaphoreTake(__g_matter_mutex, portMAX_DELAY);
-    bool s =  __g_matter_connected_flag;
-    xSemaphoreGive(__g_matter_mutex);
-    return s;
-}
 
 static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 {
@@ -96,14 +54,14 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
             st.is_connected = true;
             esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_WIFI_ST, &st, sizeof(struct view_data_wifi_st ), portMAX_DELAY);
 
-            __g_matter_connected_flag_set(true);
+            __g_matter_connected_flag = true;
             uint8_t screen = SCREEN_DASHBOARD;
             ESP_ERROR_CHECK(esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SCREEN_START, &screen, sizeof(screen), portMAX_DELAY));
         }
         break;
     case chip::DeviceLayer::DeviceEventType::kCommissioningComplete: {
         ESP_LOGI(TAG, "Connected");
-        __g_matter_connected_flag_set(true);
+        __g_matter_connected_flag = true;
         break;
     }
     case chip::DeviceLayer::DeviceEventType::kFailSafeTimerExpired:
@@ -130,7 +88,7 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
     case chip::DeviceLayer::DeviceEventType::kFabricRemoved:
     {
         ESP_LOGI(TAG, "Fabric removed successfully");
-        __g_matter_connected_flag_set(false);
+        __g_matter_connected_flag = false;
         chip::CommissioningWindowManager & commissionMgr = chip::Server::GetInstance().GetCommissioningWindowManager();
         constexpr auto kTimeoutSeconds = chip::System::Clock::Seconds16(k_timeout_seconds);
         if (!commissionMgr.IsCommissioningWindowOpen())
@@ -160,7 +118,7 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
     {
         ESP_LOGI(TAG, "Fabric is committed");
 
-        __g_matter_connected_flag_set(true);
+        __g_matter_connected_flag = true;
         uint8_t screen = SCREEN_DASHBOARD;
         ESP_ERROR_CHECK(esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SCREEN_START, &screen, sizeof(screen), portMAX_DELAY));
         break;
@@ -261,7 +219,7 @@ static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16
 static void update_attribute(node_t *node, uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id,
                              esp_matter_attr_val_t value, const char* name) {
     const char* action_name = "not logging since Matter is not connected";
-    if (__g_matter_connected_flag_get()) {
+    if (__g_matter_connected_flag.load()) {
         action_name = "updated matter value";
         endpoint_t *endpoint = endpoint::get(node, endpoint_id);
         cluster_t *cluster = cluster::get(endpoint, cluster_id);
@@ -281,10 +239,10 @@ static void __matter_sensor_reporter(void* arg) {
     node_t *node = node::get();
     update_attribute(node, temperature_endpoint_id, TemperatureMeasurement::Id,
                      TemperatureMeasurement::Attributes::MeasuredValue::Id,
-                     esp_matter_int16(__temperature_value_get()), "Temperature");
+                     esp_matter_int16(__g_sensor_values.temperature.load()), "Temperature");
     update_attribute(node, humidity_endpoint_id, RelativeHumidityMeasurement::Id,
                      RelativeHumidityMeasurement::Attributes::MeasuredValue::Id,
-                     esp_matter_int16( __humidity_value_get()), "Humidity");
+                     esp_matter_int16(__g_sensor_values.humidity.load()), "Humidity");
 }
 
 static void __button2_callback(bool state) {
@@ -333,7 +291,7 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
         }
         case VIEW_EVENT_MATTER_DASHBOARD_DATA: {
             ESP_LOGI(TAG, "event: VIEW_EVENT_MATTER_DASHBOARD_DATA");
-            if (!__g_matter_connected_flag_get()) {
+            if (!__g_matter_connected_flag.load()) {
                 return;
             }
             struct view_data_matter_dashboard_data  *p_data = (struct view_data_matter_dashboard_data *) event_data;
@@ -429,13 +387,11 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
                     break;
                 }
                 case SENSOR_DATA_TEMP: {
-                    int temperature = (int)(p_data->value*100);
-                    __temperature_value_set(temperature);
+                    __g_sensor_values.temperature = (int16_t)(p_data->value*100);
                     break;
                 }
                 case SENSOR_DATA_HUMIDITY: {
-                    int humidity = (int)(p_data->value*100);
-                    __humidity_value_set(humidity);
+                    __g_sensor_values.humidity = (int16_t)(p_data->value*100);
                     break;
                 }
                 default:
@@ -450,9 +406,7 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
 
 int indicator_matter_setup(void) {
     esp_err_t err = ESP_OK;
-    __g_matter_mutex  =  xSemaphoreCreateMutex();  
-    __g_matter_data_mutex = xSemaphoreCreateMutex();  
-    __g_matter_connected_flag_set(chip::Server::GetInstance().GetFabricTable().FabricCount() > 0);
+    __g_matter_connected_flag = chip::Server::GetInstance().GetFabricTable().FabricCount() > 0;
     node::config_t node_config;
     node_t *node = node::create(&node_config, app_attribute_update_cb, app_identification_cb);
 
@@ -526,7 +480,7 @@ int indicator_matter_setup(void) {
 } 
 
 int indicator_matter_init(void) {
-    if (!__g_matter_connected_flag_get()) {
+    if (!__g_matter_connected_flag.load()) {
         ESP_LOGI(TAG, "Beginning Matter Provisioning");
         uint8_t screen = SCREEN_MATTER_CONFIG;
         ESP_ERROR_CHECK(esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SCREEN_START, &screen, sizeof(screen), portMAX_DELAY));
