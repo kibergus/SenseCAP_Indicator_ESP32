@@ -28,8 +28,7 @@ static int __g_temperature = 0;
 constexpr auto k_timeout_seconds = 300;
 static SemaphoreHandle_t       __g_matter_mutex;
 static SemaphoreHandle_t       __g_matter_data_mutex;
-static esp_timer_handle_t   matter_humidity_timer_handle;
-static esp_timer_handle_t   matter_temperature_timer_handle; 
+static esp_timer_handle_t   matter_sensor_timer_handle;
 
 using namespace esp_matter;
 using namespace esp_matter::attribute;
@@ -278,15 +277,11 @@ static void update_attribute(node_t *node, uint16_t endpoint_id, uint32_t cluste
     }
 }
 
-static void __matter_temperature_reporter(void* arg) {
+static void __matter_sensor_reporter(void* arg) {
     node_t *node = node::get();
     update_attribute(node, temperature_endpoint_id, TemperatureMeasurement::Id,
                      TemperatureMeasurement::Attributes::MeasuredValue::Id,
                      esp_matter_int16(__temperature_value_get()), "Temperature");
-}
-
-static void __matter_humidity_reporter(void* arg) {
-    node_t *node = node::get();
     update_attribute(node, humidity_endpoint_id, RelativeHumidityMeasurement::Id,
                      RelativeHumidityMeasurement::Attributes::MeasuredValue::Id,
                      esp_matter_int16( __humidity_value_get()), "Humidity");
@@ -536,23 +531,15 @@ int indicator_matter_init(void) {
         uint8_t screen = SCREEN_MATTER_CONFIG;
         ESP_ERROR_CHECK(esp_event_post_to(view_event_handle, VIEW_EVENT_BASE, VIEW_EVENT_SCREEN_START, &screen, sizeof(screen), portMAX_DELAY));
     }
-    const esp_timer_create_args_t temperature_timer_args = {
-            .callback = &__matter_temperature_reporter,
+    const esp_timer_create_args_t sensor_timer_args = {
+            .callback = &__matter_sensor_reporter,
             /* argument specified here will be passed to timer callback function */
-            .arg = (void*) matter_temperature_timer_handle,
-            .name = "matter temperature update"
+            .arg = (void*) matter_sensor_timer_handle,
+            .name = "matter sensor update"
     };
-    ESP_ERROR_CHECK(esp_timer_create(&temperature_timer_args, &matter_temperature_timer_handle));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(matter_temperature_timer_handle, 1000000 * MATTER_UPDATE_INTERVAL_IN_SECONDS)); //30 seconds
+    ESP_ERROR_CHECK(esp_timer_create(&sensor_timer_args, &matter_sensor_timer_handle));
+    ESP_ERROR_CHECK(esp_timer_start_periodic(matter_sensor_timer_handle, 1000000 * MATTER_UPDATE_INTERVAL_IN_SECONDS)); //30 seconds
 
-    const esp_timer_create_args_t humidity_timer_args = {
-            .callback = &__matter_humidity_reporter,
-            /* argument specified here will be passed to timer callback function */
-            .arg = (void*) matter_humidity_timer_handle,
-            .name = "matter humidity update"
-    };
-    ESP_ERROR_CHECK(esp_timer_create(&humidity_timer_args, &matter_humidity_timer_handle));
-    ESP_ERROR_CHECK(esp_timer_start_periodic(matter_humidity_timer_handle, 1000000 * MATTER_UPDATE_INTERVAL_IN_SECONDS)); //30 seconds
     ESP_ERROR_CHECK(esp_event_handler_instance_register_with(view_event_handle,
                                                         VIEW_EVENT_BASE, VIEW_EVENT_SENSOR_DATA,
                                                         __view_event_handler, NULL, NULL));
