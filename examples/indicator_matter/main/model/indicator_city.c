@@ -425,7 +425,7 @@ static int __ip_get(char *ip, int buf_len)
     return -1;
 }
 
-static int __time_zone_get(char *ip)
+static int __time_zone_get(char *timezone)
 {
     esp_tls_cfg_t cfg = {
         .cacert_buf = (const unsigned char *) timeapi_root_cert_pem_start,
@@ -435,7 +435,7 @@ static int __time_zone_get(char *ip)
     char time_zone_url[128] = {0};
     char time_zone_request[200] = {0};
     int len  = 0;
-    snprintf(time_zone_url, sizeof(time_zone_url),"https://www.timeapi.io/api/TimeZone/ip?ipAddress=%s",ip);
+    snprintf(time_zone_url, sizeof(time_zone_url),"https://www.timeapi.io/api/TimeZone/zone?timeZone=%s",timezone);
     snprintf(time_zone_request, sizeof(time_zone_request),"GET %s HTTP/1.1\r\nHost: www.timeapi.io\r\nUser-Agent: sensecap\r\n\r\n", time_zone_url);
 
     len = https_get_request(cfg, time_zone_url, time_zone_request);
@@ -739,17 +739,9 @@ static void __indicator_http_task(void *p_arg)
             }
         }
 
-        if( net_flag && !ip_flag ) {
-            ESP_LOGI(TAG, "Get ip...");
-            err = __ip_get(__g_city_model.ip, sizeof(__g_city_model.ip));
-            if( err ==0 ) {
-                ESP_LOGI(TAG, "ip: %s", __g_city_model.ip);
-                ip_flag= true;
-            }
-        }
         if(  net_flag && ip_flag && !time_zone_flag) {
             ESP_LOGI(TAG, "Get time zone...");
-            err =  __time_zone_get(__g_city_model.ip); 
+            err =  __time_zone_get(__g_city_model.timezone);
             if( err == 0) {
                 char zone_str[32];
                 float zone = __g_city_model.local_utc_offset / 3600.0;
