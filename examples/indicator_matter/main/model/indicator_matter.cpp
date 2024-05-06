@@ -511,7 +511,7 @@ int indicator_matter_setup(void) {
         TAG, "Failed to create CO2 measurement.");
     // NOTE: https://github.com/espressif/esp-matter/issues/911 needs to be fixed for this to compile.
     ESP_RETURN_ON_ERROR(
-        add_gas_concentration_attribute<esp_matter::cluster::carbon_dioxide_concentration_measurement::config_t>(
+        add_gas_concentration_attribute<esp_matter::cluster::total_volatile_organic_compounds_concentration_measurement::config_t>(
             air_quality_endpoint,
             chip::app::Clusters::TotalVolatileOrganicCompoundsConcentrationMeasurement::Attributes::MeasuredValue::Id,
             chip::app::Clusters::TotalVolatileOrganicCompoundsConcentrationMeasurement::Attributes::MeasurementUnit::Id),
