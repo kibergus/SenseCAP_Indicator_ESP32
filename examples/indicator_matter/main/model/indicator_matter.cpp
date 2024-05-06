@@ -16,31 +16,33 @@
 #include <platform/ESP32/OpenthreadLauncher.h>
 #endif
 
-static const char *TAG = "matter";
-uint16_t temperature_endpoint_id = 0;
-uint16_t humidity_endpoint_id = 0;
-uint16_t extended_color_light_endpoint_id = 0;
-uint16_t door_lock_endpoint_id = 0;
-uint16_t extended_color_light_endpoint2_id = 0;
-static std::atomic_bool __g_matter_connected_flag = false;
-static bool __g_ip_connected_flag = false;
-constexpr auto k_timeout_seconds = 300;
-static esp_timer_handle_t   matter_sensor_timer_handle;
-
-struct Sensors {
-  std::atomic<int16_t> temperature = 0;
-  std::atomic<int16_t> humidity = 0;
-};
-
-static Sensors __g_sensor_values;
-
 using namespace esp_matter;
 using namespace esp_matter::attribute;
 using namespace esp_matter::endpoint;
 using namespace chip::app::Clusters;
 using namespace esp_matter::cluster::basic_information::attribute;
 
-static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
+namespace {
+
+const char *TAG = "matter";
+uint16_t temperature_endpoint_id = 0;
+uint16_t humidity_endpoint_id = 0;
+uint16_t extended_color_light_endpoint_id = 0;
+uint16_t door_lock_endpoint_id = 0;
+uint16_t extended_color_light_endpoint2_id = 0;
+std::atomic_bool __g_matter_connected_flag = false;
+bool __g_ip_connected_flag = false;
+constexpr auto k_timeout_seconds = 300;
+esp_timer_handle_t   matter_sensor_timer_handle;
+
+struct Sensors {
+  std::atomic<int16_t> temperature = 0;
+  std::atomic<int16_t> humidity = 0;
+};
+
+Sensors __g_sensor_values;
+
+void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
 {
     switch (event->Type) {
     case chip::DeviceLayer::DeviceEventType::kInterfaceIpAddressChanged:
@@ -128,15 +130,15 @@ static void app_event_cb(const ChipDeviceEvent *event, intptr_t arg)
     }
 }
 
-static esp_err_t app_identification_cb(identification::callback_type_t type, uint16_t endpoint_id, uint8_t effect_id,
-                                       uint8_t effect_variant, void *priv_data)
+esp_err_t app_identification_cb(identification::callback_type_t type, uint16_t endpoint_id, uint8_t effect_id,
+                                uint8_t effect_variant, void *priv_data)
 {
     ESP_LOGI(TAG, "Identification callback: type: %u, effect: %u, variant: %u", type, effect_id, effect_variant);
     return ESP_OK;
 }
 
-static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16_t endpoint_id, uint32_t cluster_id,
-                                         uint32_t attribute_id, esp_matter_attr_val_t *val, void *priv_data)
+esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16_t endpoint_id, uint32_t cluster_id,
+                                  uint32_t attribute_id, esp_matter_attr_val_t *val, void *priv_data)
 {
     esp_err_t err = ESP_OK;
     if (type == PRE_UPDATE) {
@@ -216,8 +218,8 @@ static esp_err_t app_attribute_update_cb(attribute::callback_type_t type, uint16
 }
 
 // Reports the given value to the given attribute if Matter is connected.
-static void update_attribute(node_t *node, uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id,
-                             esp_matter_attr_val_t value, const char* name) {
+void update_attribute(node_t *node, uint16_t endpoint_id, uint32_t cluster_id, uint32_t attribute_id,
+                      esp_matter_attr_val_t value, const char* name) {
     const char* action_name = "not logging since Matter is not connected";
     if (__g_matter_connected_flag.load()) {
         action_name = "updated matter value";
@@ -235,7 +237,7 @@ static void update_attribute(node_t *node, uint16_t endpoint_id, uint32_t cluste
     }
 }
 
-static void __matter_sensor_reporter(void* arg) {
+void __matter_sensor_reporter(void* arg) {
     node_t *node = node::get();
     update_attribute(node, temperature_endpoint_id, TemperatureMeasurement::Id,
                      TemperatureMeasurement::Attributes::MeasuredValue::Id,
@@ -245,7 +247,7 @@ static void __matter_sensor_reporter(void* arg) {
                      esp_matter_int16(__g_sensor_values.humidity.load()), "Humidity");
 }
 
-static void __button2_callback(bool state) {
+void __button2_callback(bool state) {
     uint16_t endpoint_id = extended_color_light_endpoint2_id;
     uint32_t cluster_id = OnOff::Id;
     uint32_t attribute_id = OnOff::Attributes::OnOff::Id;
@@ -263,7 +265,7 @@ static void __button2_callback(bool state) {
     attribute::update(endpoint_id, cluster_id, attribute_id, &val);
 }
 
-static void __button1_callback(bool state) {
+void __button1_callback(bool state) {
     uint16_t endpoint_id = extended_color_light_endpoint_id;
     uint32_t cluster_id = OnOff::Id;
     uint32_t attribute_id = OnOff::Attributes::OnOff::Id;
@@ -281,8 +283,7 @@ static void __button1_callback(bool state) {
     attribute::update(endpoint_id, cluster_id, attribute_id, &val);
 }
 
-static void __view_event_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data)
-{
+void __view_event_handler(void* handler_args, esp_event_base_t base, int32_t id, void* event_data) {
     switch (id)
     {
         case VIEW_EVENT_SHUTDOWN: {
@@ -403,6 +404,8 @@ static void __view_event_handler(void* handler_args, esp_event_base_t base, int3
             break;
     }
 }
+
+} // namespace
 
 int indicator_matter_setup(void) {
     esp_err_t err = ESP_OK;
