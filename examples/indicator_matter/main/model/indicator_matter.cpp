@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cmath>
 
+#include <esp_check.h>
 #include <esp_log.h>
 #include <esp_matter.h>
 #include <esp_wifi.h>
@@ -29,6 +30,7 @@ namespace {
 const char *TAG = "matter";
 uint16_t temperature_endpoint_id = 0;
 uint16_t humidity_endpoint_id = 0;
+uint16_t air_quality_endpoint_id = 0;
 uint16_t extended_color_light_endpoint_id = 0;
 uint16_t door_lock_endpoint_id = 0;
 uint16_t extended_color_light_endpoint2_id = 0;
@@ -40,6 +42,10 @@ esp_timer_handle_t   matter_sensor_timer_handle;
 struct Sensors {
   std::atomic<float> temperature = std::numeric_limits<float>::quiet_NaN();
   std::atomic<float> humidity = std::numeric_limits<float>::quiet_NaN();
+  // HomeAssistant will ignore updates if they are not float.
+  std::atomic<float> co2 = std::numeric_limits<float>::quiet_NaN();
+  // NOTE: HomeAssistant does not recognize tvoc yet.
+  std::atomic<float> tvoc = std::numeric_limits<float>::quiet_NaN();
 };
 
 Sensors __g_sensor_values;
@@ -247,6 +253,14 @@ esp_matter_attr_val_t nullable_int16_matter_calue(float value) {
   }
 }
 
+esp_matter_attr_val_t nullable_float_matter_calue(float value) {
+  if (std::isnan(value)) {
+    return esp_matter_nullable_float(nullable<float>());
+  } else {
+    return esp_matter_nullable_float(value);
+  }
+}
+
 void __matter_sensor_reporter(void* arg) {
     node_t *node = node::get();
     update_attribute(node, temperature_endpoint_id, TemperatureMeasurement::Id,
@@ -255,6 +269,12 @@ void __matter_sensor_reporter(void* arg) {
     update_attribute(node, humidity_endpoint_id, RelativeHumidityMeasurement::Id,
                      RelativeHumidityMeasurement::Attributes::MeasuredValue::Id,
                      nullable_int16_matter_calue(__g_sensor_values.humidity.load()), "Humidity");
+    update_attribute(node, air_quality_endpoint_id, CarbonDioxideConcentrationMeasurement::Id,
+                     CarbonDioxideConcentrationMeasurement::Attributes::MeasuredValue::Id,
+                     nullable_float_matter_calue(__g_sensor_values.co2.load()), "CO2");
+    update_attribute(node, air_quality_endpoint_id, TotalVolatileOrganicCompoundsConcentrationMeasurement::Id,
+                     TotalVolatileOrganicCompoundsConcentrationMeasurement::Attributes::MeasuredValue::Id,
+                     nullable_float_matter_calue(__g_sensor_values.tvoc.load()), "tVOC");
 }
 
 void __button2_callback(bool state) {
@@ -392,9 +412,11 @@ void __view_event_handler(void* handler_args, esp_event_base_t base, int32_t id,
             switch (p_data->sensor_type)
             {
                 case SENSOR_DATA_CO2: {
+                    __g_sensor_values.co2 = p_data->value;
                     break;
                 }
                 case SENSOR_DATA_TVOC: {
+                    __g_sensor_values.tvoc = p_data->value;
                     break;
                 }
                 case SENSOR_DATA_TEMP: {
@@ -415,6 +437,53 @@ void __view_event_handler(void* handler_args, esp_event_base_t base, int32_t id,
     }
 }
 
+template<class EspClusterConfig>
+esp_err_t add_gas_concentration_attribute(endpoint_t *air_quality_endpoint, uint32_t measured_value_attribute_id, uint32_t measurement_unit_attribute_id) {
+    EspClusterConfig cluster_config;
+    esp_matter::cluster_t *cluster = create(air_quality_endpoint, &cluster_config, esp_matter::cluster_flags::CLUSTER_FLAG_SERVER);
+    if (!cluster) {
+        ESP_LOGI(TAG, "Failed to create gas concentration measurement cluster");
+        return ESP_FAIL;
+    }
+
+    // set feature map
+    esp_matter::attribute_t *feature_map_attribute = esp_matter::attribute::get(cluster, chip::app::Clusters::Globals::Attributes::FeatureMap::Id);
+    if (feature_map_attribute) {
+        esp_matter_attr_val_t val = esp_matter_invalid(nullptr);
+        ESP_RETURN_ON_ERROR(
+            esp_matter::attribute::get_val(feature_map_attribute, &val),
+            TAG, "Failed to get FeatureMap attribute value.");
+        val.val.u32 |= 0x1; // MEA, Cluster supports numeric measurement of substance
+        ESP_RETURN_ON_ERROR(
+            esp_matter::attribute::set_val(feature_map_attribute, &val),
+            TAG, "Failed to set FeatureMap attribute value.");
+    }
+
+    // create <Measured Value> attribute
+    esp_matter::attribute_t *measured_value_attribute = esp_matter::attribute::get(cluster, measured_value_attribute_id);
+    if (!measured_value_attribute) {
+        uint8_t flags = esp_matter::attribute_flags::ATTRIBUTE_FLAG_NULLABLE;
+        measured_value_attribute = esp_matter::attribute::create(cluster, measured_value_attribute_id, flags, esp_matter_nullable_float(nullable<float>()));
+        if (!measured_value_attribute) {
+            ESP_LOGI(TAG, "Failed to create <Measured Value> attribute");
+            return ESP_FAIL;
+        }
+    }
+
+    // create <Measurement Unit> attribute & set value
+    esp_matter::attribute_t *measurement_unit_attribute = esp_matter::attribute::get(cluster, measurement_unit_attribute_id);
+    if (!measurement_unit_attribute) {
+        uint8_t flags = esp_matter::attribute_flags::ATTRIBUTE_FLAG_NONE;
+        measurement_unit_attribute = esp_matter::attribute::create(cluster, measurement_unit_attribute_id, flags, esp_matter_enum8(0));   // PPM
+        if (!measurement_unit_attribute) {
+            ESP_LOGI(TAG, "Failed to create <Measurement Unit> attribute");
+            return ESP_FAIL;
+        }
+    }
+
+    return ESP_OK;
+}
+
 } // namespace
 
 int indicator_matter_setup(void) {
@@ -430,6 +499,23 @@ int indicator_matter_setup(void) {
     // Create the humidity endpoint
     humidity_sensor::config_t humidity_config;
     endpoint_t *humidity_endpoint = humidity_sensor::create(node, &humidity_config, ENDPOINT_FLAG_NONE, NULL);
+
+    // Create the air quality endpoint
+    air_quality_sensor::config_t air_quality_config;
+    endpoint_t *air_quality_endpoint = air_quality_sensor::create(node, &air_quality_config, ENDPOINT_FLAG_NONE, NULL);
+    ESP_RETURN_ON_ERROR(
+        add_gas_concentration_attribute<esp_matter::cluster::carbon_dioxide_concentration_measurement::config_t>(
+            air_quality_endpoint,
+            chip::app::Clusters::CarbonDioxideConcentrationMeasurement::Attributes::MeasuredValue::Id,
+            chip::app::Clusters::CarbonDioxideConcentrationMeasurement::Attributes::MeasurementUnit::Id),
+        TAG, "Failed to create CO2 measurement.");
+    // NOTE: https://github.com/espressif/esp-matter/issues/911 needs to be fixed for this to compile.
+    ESP_RETURN_ON_ERROR(
+        add_gas_concentration_attribute<esp_matter::cluster::carbon_dioxide_concentration_measurement::config_t>(
+            air_quality_endpoint,
+            chip::app::Clusters::TotalVolatileOrganicCompoundsConcentrationMeasurement::Attributes::MeasuredValue::Id,
+            chip::app::Clusters::TotalVolatileOrganicCompoundsConcentrationMeasurement::Attributes::MeasurementUnit::Id),
+        TAG, "Failed to create tVOC measurement.");
 
     // Create the dimmable light endpoint
     extended_color_light::config_t extended_color_light_config;
@@ -451,6 +537,7 @@ int indicator_matter_setup(void) {
     if (!node || 
         !temperature_endpoint || 
         !humidity_endpoint ||
+        !air_quality_endpoint ||
         !extended_color_light_endpoint ||
         !door_lock_endpoint ||
         !extended_color_light_endpoint2
@@ -463,6 +550,9 @@ int indicator_matter_setup(void) {
 
     humidity_endpoint_id = endpoint::get_id(humidity_endpoint);
     ESP_LOGI(TAG, "Humidity sensor created with endpoint_id %d", humidity_endpoint_id);
+
+    air_quality_endpoint_id = endpoint::get_id(air_quality_endpoint);
+    ESP_LOGI(TAG, "Air quality sensor created with endpoint_id %d", air_quality_endpoint_id);
 
     extended_color_light_endpoint_id = endpoint::get_id(extended_color_light_endpoint);
     ESP_LOGI(TAG, "Dimmable light created with endpoint_id %d", extended_color_light_endpoint_id);
