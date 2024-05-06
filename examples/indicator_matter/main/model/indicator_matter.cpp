@@ -3,6 +3,8 @@
 #include "matter_config.h"
 
 #include <atomic>
+#include <cmath>
+
 #include <esp_log.h>
 #include <esp_matter.h>
 #include <esp_wifi.h>
@@ -36,8 +38,8 @@ constexpr auto k_timeout_seconds = 300;
 esp_timer_handle_t   matter_sensor_timer_handle;
 
 struct Sensors {
-  std::atomic<int16_t> temperature = 0;
-  std::atomic<int16_t> humidity = 0;
+  std::atomic<float> temperature = std::numeric_limits<float>::quiet_NaN();
+  std::atomic<float> humidity = std::numeric_limits<float>::quiet_NaN();
 };
 
 Sensors __g_sensor_values;
@@ -237,14 +239,22 @@ void update_attribute(node_t *node, uint16_t endpoint_id, uint32_t cluster_id, u
     }
 }
 
+esp_matter_attr_val_t nullable_int16_matter_calue(float value) {
+  if (std::isnan(value)) {
+    return esp_matter_nullable_int16(nullable<int16_t>());
+  } else {
+    return esp_matter_nullable_int16((int16_t)(value * 100));
+  }
+}
+
 void __matter_sensor_reporter(void* arg) {
     node_t *node = node::get();
     update_attribute(node, temperature_endpoint_id, TemperatureMeasurement::Id,
                      TemperatureMeasurement::Attributes::MeasuredValue::Id,
-                     esp_matter_int16(__g_sensor_values.temperature.load()), "Temperature");
+                     nullable_int16_matter_calue(__g_sensor_values.temperature.load()), "Temperature");
     update_attribute(node, humidity_endpoint_id, RelativeHumidityMeasurement::Id,
                      RelativeHumidityMeasurement::Attributes::MeasuredValue::Id,
-                     esp_matter_int16(__g_sensor_values.humidity.load()), "Humidity");
+                     nullable_int16_matter_calue(__g_sensor_values.humidity.load()), "Humidity");
 }
 
 void __button2_callback(bool state) {
@@ -388,11 +398,11 @@ void __view_event_handler(void* handler_args, esp_event_base_t base, int32_t id,
                     break;
                 }
                 case SENSOR_DATA_TEMP: {
-                    __g_sensor_values.temperature = (int16_t)(p_data->value*100);
+                    __g_sensor_values.temperature = p_data->value;
                     break;
                 }
                 case SENSOR_DATA_HUMIDITY: {
-                    __g_sensor_values.humidity = (int16_t)(p_data->value*100);
+                    __g_sensor_values.humidity = p_data->value;
                     break;
                 }
                 default:
